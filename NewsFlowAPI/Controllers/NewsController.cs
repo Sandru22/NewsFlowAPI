@@ -2,8 +2,12 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.ML;
+using Microsoft.ML.Trainers;
+using NewsFlowAPI.Dto;
 using NewsFlowAPI.Models;
 using System.IdentityModel.Tokens.Jwt;
+using System.Linq;
+using System.Security.Claims;
 
 
 namespace NewsFlowAPI.Controllers
@@ -19,15 +23,124 @@ namespace NewsFlowAPI.Controllers
             _context = context;
         }
 
-        // GET: api/news - Obține toate știrile
+
         [HttpGet]
         public async Task<ActionResult<IEnumerable<NewsItem>>> GetNews()
         {
-            return await _context.News.ToListAsync();
+            return await _context.News
+                .OrderByDescending(n => n.PublishedAt)
+                .ToListAsync();
+
         }
 
-        // GET: api/news/5 - Obține o singură știre după ID
-        [HttpGet("{id}")]
+
+        [HttpGet("category/{category}")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetNewsByCategory(
+            string category,
+            [FromQuery] string userId,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20)
+        {
+            var news = await _context.News
+        .Where(n => n.Category.ToLower() == category.ToLower())
+        .OrderByDescending(n => n.PublishedAt)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .ToListAsync();
+
+            var result = await MapNewsWithSubscriptions(news, userId);
+            return Ok(result);
+        }
+
+        [HttpGet("{newsId}")]
+        public async Task<ActionResult<NewsItemDto>> GetNewsById(int newsId, [FromQuery] string userId)
+        {
+            var news = await _context.News.FindAsync(newsId);
+            if (news == null)
+                return NotFound();
+
+            var subscribedSources = await _context.Subscriptions
+                .Where(s => s.userId == userId)
+                .Select(s => s.Source)
+                .ToListAsync();
+
+            var dto = new NewsItemDto
+            {
+                NewsId = news.NewsId,
+                Title = news.Title,
+                Content = news.Content,
+                Category = news.Category,
+                PublishedAt = news.PublishedAt,
+                Source = news.Source,
+                Url = news.Url,
+                Likes = news.Likes,
+                ImageUrl = news.ImageUrl,
+                HasSubscribed = subscribedSources.Contains(news.Source)
+            };
+
+            return Ok(dto);
+        }
+
+        [HttpGet("search/{words}")]
+
+        public async Task<ActionResult<IEnumerable<NewsItem>>> SearchNews(
+            string words, 
+            [FromQuery] string userId,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20)
+        {
+            if (string.IsNullOrWhiteSpace(words))
+            {
+                return BadRequest("Search words cannot be empty.");
+            }
+            var searchWords = words.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var news = await _context.News
+                .Where(n => searchWords.All(word =>
+                                                    n.Title.ToLower().Contains(word.ToLower()) ||
+                                                    n.Content.ToLower().Contains(word.ToLower())))
+                .OrderByDescending(n => n.PublishedAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+            var mapped = await MapNewsWithSubscriptions(news, userId);
+            return Ok(mapped);
+        }
+
+        private async Task<ActionResult<IEnumerable<NewsItem>>> GetNewsByCategory(string category)
+        {
+            return await _context.News
+                .OrderByDescending(n => n.PublishedAt)
+                .Where(n => n.Category == category)
+                .ToListAsync();
+        }
+
+        [HttpGet("Sport")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetSportNews()
+    => await GetNewsByCategory("Sport");
+
+        [HttpGet("Auto")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetAutoNews()
+    => await GetNewsByCategory("Auto");
+
+        [HttpGet("Politica")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetPoliticaNews()
+    => await GetNewsByCategory("Politica");
+
+        [HttpGet("Externe")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetExterneNews()
+    => await GetNewsByCategory("Externe");
+
+        [HttpGet("Meteo")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetMeteoNews()
+    => await GetNewsByCategory("Meteo");
+
+        [HttpGet("Tech")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetTechNews()
+    => await GetNewsByCategory("Tech");
+
+
+
+        [HttpGet("ById/{id}")]
         public async Task<ActionResult<NewsItem>> GetNewsItem(int id)
         {
             var newsItem = await _context.News.FindAsync(id);
@@ -40,7 +153,7 @@ namespace NewsFlowAPI.Controllers
             return newsItem;
         }
 
-        // POST: api/news - Adaugă o nouă știre
+
         [HttpPost]
         public async Task<ActionResult<NewsItem>> PostNewsItem(NewsItem newsItem)
         {
@@ -50,7 +163,6 @@ namespace NewsFlowAPI.Controllers
             return CreatedAtAction(nameof(GetNewsItem), new { id = newsItem.NewsId }, newsItem);
         }
 
-        // PUT: api/news/5 - Actualizează o știre existentă
         [HttpPut("{id}")]
         public async Task<IActionResult> PutNewsItem(int id, NewsItem newsItem)
         {
@@ -80,7 +192,7 @@ namespace NewsFlowAPI.Controllers
             return NoContent();
         }
 
-        // DELETE: api/news/5 - Șterge o știre
+
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteNewsItem(int id)
         {
@@ -102,7 +214,63 @@ namespace NewsFlowAPI.Controllers
         }
 
 
+        [HttpPost("subscribe/{userId}")]
+        public async Task<IActionResult> Subscribe(string userId, [FromQuery] string source)
+        {
+            var alreadySubscribed = await _context.Subscriptions
+                .AnyAsync(s => s.userId == userId && s.Source == source);
 
+            if (alreadySubscribed)
+                return BadRequest("Deja abonat.");
+
+            _context.Subscriptions.Add(new Subscriptions
+            {
+                userId = userId,
+                Source = source,
+                
+            });
+
+            await _context.SaveChangesAsync();
+            return Ok("Abonat cu succes.");
+        }
+
+        [HttpDelete("unsubscribe/{userId}")]
+        public async Task<IActionResult> Unsubscribe(string userId, [FromQuery] string Source)
+        {
+            var subscription = await _context.Subscriptions
+                .FirstOrDefaultAsync(s => s.userId == userId && s.Source == Source);
+            if (subscription == null)
+            {
+                return NotFound("Nu ești abonat la această sursă.");
+            }
+            _context.Subscriptions.Remove(subscription);
+            await _context.SaveChangesAsync();
+            return Ok("Dezabonat cu succes.");
+        }
+
+        [HttpGet("subscriptions")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetSubscribedNews([FromQuery] string userId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+        {
+            var sources = await _context.Subscriptions
+                .Where(s => s.userId == userId)
+                .Select(s => s.Source)
+                .ToListAsync();
+
+            if (!sources.Any())
+                return NotFound("User is not subscribed to any sources.");
+
+            var news = await _context.News
+                .Where(n => sources.Contains(n.Source))
+                .OrderByDescending(n => n.PublishedAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToListAsync();
+
+            var mapped = await MapNewsWithSubscriptions(news, userId);
+            return Ok(mapped);
+        }
 
         [HttpPost("{id}/like")]
         public async Task<IActionResult> LikeNewsItem(int id, [FromBody] string userId)
@@ -111,7 +279,7 @@ namespace NewsFlowAPI.Controllers
             if (newsItem == null)
                 return NotFound();
 
-            // Schimbă metoda de căutare a like-ului existent
+
             var existingLike = await _context.NewsLikes
                 .FirstOrDefaultAsync(nl => nl.NewsId == id && nl.UserId == userId);
 
@@ -131,14 +299,14 @@ namespace NewsFlowAPI.Controllers
             {
                 UserId = userId,
                 NewsId = id,
-                InteractionType = 2, // Like
+                InteractionType = 2, 
                 InteractionDate = DateTime.UtcNow
             };
             _context.UserInteractions.Add(interaction);
 
             await _context.SaveChangesAsync();
 
-            // Actualizează numărul de like-uri după salvare
+
             newsItem.Likes = await _context.NewsLikes.CountAsync(nl => nl.NewsId == id);
             await _context.SaveChangesAsync();
 
@@ -152,7 +320,6 @@ namespace NewsFlowAPI.Controllers
             if (newsItem == null)
                 return NotFound();
 
-            // Găsește like-ul corect
             var existingLike = await _context.NewsLikes
                 .FirstOrDefaultAsync(l => l.NewsId == id && l.UserId == userId);
 
@@ -162,7 +329,7 @@ namespace NewsFlowAPI.Controllers
             _context.NewsLikes.Remove(existingLike);
             await _context.SaveChangesAsync();
 
-            // Actualizează numărul de like-uri
+
             newsItem.Likes = await _context.NewsLikes.CountAsync(nl => nl.NewsId == id);
             await _context.SaveChangesAsync();
 
@@ -192,7 +359,7 @@ namespace NewsFlowAPI.Controllers
             if (newsItem == null)
                 return NotFound();
 
-            // Verifică dacă utilizatorul a distribuit deja această știre
+
             var existingShare = await _context.NewsShares
                 .FirstOrDefaultAsync(ns => ns.NewsId == id && ns.UserId == userId);
 
@@ -214,7 +381,7 @@ namespace NewsFlowAPI.Controllers
             {
                 UserId = userId,
                 NewsId = id,
-                InteractionType = 3, // Share
+                InteractionType = 3, 
                 InteractionDate = DateTime.UtcNow
             };
             _context.UserInteractions.Add(interaction);
@@ -240,6 +407,216 @@ namespace NewsFlowAPI.Controllers
             await _context.SaveChangesAsync();
 
             return Ok(new { message = "View recorded" });
+        }
+
+        [HttpPost("register-device")]
+        public async Task<IActionResult> RegisterDevice([FromBody] RegisterDeviceDto model)
+        {
+            if (string.IsNullOrWhiteSpace(model.UserId) || string.IsNullOrWhiteSpace(model.DeviceToken))
+                return BadRequest("Invalid data");
+
+            var existing = await _context.UserDevices
+                .FirstOrDefaultAsync(d => d.DeviceToken == model.DeviceToken);
+
+            if (existing == null)
+            {
+                _context.UserDevices.Add(new UserDevice
+                {
+                    UserId = model.UserId,
+                    DeviceToken = model.DeviceToken
+                });
+                await _context.SaveChangesAsync();
+            }
+
+            return Ok("Device registered");
+        }
+
+        [HttpPost("unregister-device")]
+        public async Task<IActionResult> UnregisterDevice([FromBody] RegisterDeviceDto model)
+        {
+            if (string.IsNullOrWhiteSpace(model.UserId) || string.IsNullOrWhiteSpace(model.DeviceToken))
+                return BadRequest("Invalid data");
+
+            var existing = await _context.UserDevices
+                .FirstOrDefaultAsync(d => d.DeviceToken == model.DeviceToken && d.UserId == model.UserId);
+
+            if (existing != null)
+            {
+                _context.UserDevices.Remove(existing);
+                await _context.SaveChangesAsync();
+            }
+
+            return Ok("Device unregistered");
+        }
+
+        [HttpGet("recommended")]
+        public async Task<ActionResult<IEnumerable<NewsItem>>> GetRecommendedNews(
+        [FromQuery] string userId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+        {
+            var userInteractions = await _context.UserInteractions
+        .Where(ui => ui.UserId == userId)
+        .ToListAsync();
+
+            List<NewsItem> finalNews;
+
+            if (userInteractions.Count < 50)
+            {
+                finalNews = await _context.News
+                    .OrderByDescending(n => n.PublishedAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToListAsync();
+            }
+            else
+            {
+                var allNews = await _context.News.ToListAsync();
+                finalNews = GetPersonalizedRecommendations(userId, userInteractions, allNews)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToList();
+            }
+
+
+            var mapped = await MapNewsWithSubscriptions(finalNews, userId);
+            return Ok(mapped);
+        }
+
+        private List<NewsItem> GetPersonalizedRecommendations(string userId, List<UserInteraction> userInteractions, List<NewsItem> allNews)
+        {
+
+            var mlContext = new MLContext();
+
+            var userCategoryPreferences = CalculateUserCategoryPreferences(userInteractions, allNews);
+
+            var trainingData = userInteractions
+                .Join(allNews, ui => ui.NewsId, news => news.NewsId, (ui, news) => new NewsTrainingInput
+            {
+                 UserId = ui.UserId,
+                Category = news.Category,
+                Title = news.Title,
+                Content = news.Content,
+                Label = ui.InteractionType
+            }).ToList();
+
+
+            var dataView = mlContext.Data.LoadFromEnumerable(trainingData);
+
+
+            var pipeline = mlContext.Transforms.Conversion.MapValueToKey("UserId")
+                .Append(mlContext.Transforms.Text.FeaturizeText("TitleFeaturized", "Title"))
+                .Append(mlContext.Transforms.Text.FeaturizeText("DescriptionFeaturized", "Content"))
+                .Append(mlContext.Transforms.Categorical.OneHotEncoding("CategoryEncoded", "Category"))
+                .Append(mlContext.Transforms.Concatenate("Features", "TitleFeaturized", "DescriptionFeaturized", "CategoryEncoded"))
+                .Append(mlContext.Regression.Trainers.FastTree()); 
+
+
+  
+            var model = pipeline.Fit(dataView);
+
+
+            var predictionEngine = mlContext.Model.CreatePredictionEngine<NewsTrainingInput, NewsPrediction>(model);
+
+            var seenNewsIds = userInteractions.Select(ui => ui.NewsId).ToHashSet();
+
+            var now = DateTime.Now;
+            var maxAgeDays = 168; 
+            var scoredNews = allNews
+                .Where(news => !seenNewsIds.Contains(news.NewsId))
+                .Select(news =>
+            {
+                var mlScore = predictionEngine.Predict(new NewsTrainingInput
+                {
+                    UserId = userId,
+                    Content = news.Content,
+                    Title = news.Title,
+                    Category = news.Category
+
+                }).Score;
+                var normalizedMlScore = 1 / (1 + Math.Exp(-mlScore));
+                var ageDays = (now - news.PublishedAt).TotalHours;
+                var freshnessBonus = Math.Max(0, 1 - (ageDays / maxAgeDays));
+
+                var categoryScore = userCategoryPreferences.TryGetValue(news.Category, out var score) ? score : 0;
+
+
+                var finalScore = (freshnessBonus * 0.5)  + (categoryScore * 0.05)+ (normalizedMlScore * 0.45);
+
+                return new
+                {
+                    NewsItem = news,
+                    FinalScore = finalScore
+                };
+            })
+        .OrderByDescending(x => x.FinalScore)
+        .ToList();
+
+            return scoredNews.Select(x => x.NewsItem).ToList();
+        }
+
+        private Dictionary<string, float> CalculateUserCategoryPreferences(List<UserInteraction> interactions, List<NewsItem> allNews)
+        {
+
+            var categoryWeights = new Dictionary<string, float>();
+
+
+            foreach (var interaction in interactions)
+            {
+                var newsItem = allNews.FirstOrDefault(n => n.NewsId == interaction.NewsId);
+                if (newsItem != null && !string.IsNullOrEmpty(newsItem.Category))
+                {
+
+                    var interactionWeight = interaction.InteractionType switch
+                    {
+                        2 => 2.0f, 
+                        3 => 3.0f,  
+                        _ => 1.0f   
+                    };
+
+                    if (categoryWeights.ContainsKey(newsItem.Category))
+                    {
+                        categoryWeights[newsItem.Category] += interactionWeight;
+                    }
+                    else
+                    {
+                        categoryWeights[newsItem.Category] = interactionWeight;
+                    }
+                }
+            }
+
+            if (categoryWeights.Any())
+            {
+                var maxWeight = categoryWeights.Values.Max();
+                return categoryWeights.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value / maxWeight
+                );
+            }
+
+            return new Dictionary<string, float>();
+        }
+
+        private async Task<List<NewsItemDto>> MapNewsWithSubscriptions(List<NewsItem> news, string userId)
+        {
+            var userSubscriptions = await _context.Subscriptions
+                .Where(s => s.userId == userId)
+                .Select(s => s.Source)
+                .ToListAsync();
+
+            return news.Select(n => new NewsItemDto
+            {
+                NewsId = n.NewsId,
+                Title = n.Title,
+                Content = n.Content,
+                Category = n.Category,
+                PublishedAt = n.PublishedAt,
+                Source = n.Source,
+                Url = n.Url,
+                Likes = n.Likes,
+                ImageUrl = n.ImageUrl,
+                HasSubscribed = userSubscriptions.Contains(n.Source)
+            }).ToList();
         }
 
     }

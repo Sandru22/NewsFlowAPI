@@ -1,8 +1,10 @@
 ﻿using System.ServiceModel.Syndication;
+using System.Text;
 using System.Xml;
 using System.Xml.Linq;
-using HtmlAgilityPack; // Necesită instalarea HtmlAgilityPack din NuGet
-
+using AngleSharp;
+using HtmlAgilityPack;
+using NewsFlowAPI.Classifier;
 namespace NewsFlowAPI.Models
 {
     public class RssService
@@ -12,6 +14,16 @@ namespace NewsFlowAPI.Models
             List<NewsItem> newsList = new();
             try
             {
+                string forcedCategory = RssSources.FeedCategoryMap
+                    .FirstOrDefault(kvp => rssUrl.Equals(kvp.Key)).Value;
+
+                NewsClassifier classifier = null;
+                if (string.IsNullOrEmpty(forcedCategory))
+                {
+                    classifier = new NewsClassifier();
+
+                }
+
                 using var reader = XmlReader.Create(rssUrl);
                 var feed = SyndicationFeed.Load(reader);
 
@@ -19,28 +31,28 @@ namespace NewsFlowAPI.Models
                 {
                     string imageUrl = "";
 
-                    // Caută imaginea în enclosure
                     var enclosure = item.Links.FirstOrDefault(l => l.RelationshipType == "enclosure");
                     if (enclosure != null)
                     {
                         imageUrl = enclosure.Uri.ToString();
                     }
 
-                    // Caută imaginea în elemente personalizate
                     if (string.IsNullOrEmpty(imageUrl) && item.ElementExtensions.Any())
                     {
                         var thumbElement = item.ElementExtensions
                             .FirstOrDefault(e => e.OuterName == "thumbnail" || e.OuterName == "enclosure");
-
                         if (thumbElement != null)
                         {
                             imageUrl = thumbElement.GetObject<XElement>().Attribute("url")?.Value ?? "";
                         }
                     }
 
-                    // Curățăm descrierea de HTML
-                    string rawDescription = item.Summary?.Text ?? "No description";
+                    string rawDescription = item.Summary?.Text?.Trim() ?? "";
                     string cleanDescription = CleanHtml(rawDescription);
+
+
+
+                    string category = forcedCategory ?? classifier?.PredictCategory(item.Title.Text, cleanDescription);
 
                     newsList.Add(new NewsItem
                     {
@@ -48,7 +60,9 @@ namespace NewsFlowAPI.Models
                         Content = cleanDescription,
                         Url = item.Links.FirstOrDefault()?.Uri.ToString(),
                         PublishedAt = item.PublishDate.DateTime,
-                        ImageUrl = imageUrl
+                        ImageUrl = imageUrl,
+                        Source = rssUrl,
+                        Category = category
                     });
                 }
             }
@@ -59,13 +73,14 @@ namespace NewsFlowAPI.Models
 
             return newsList;
         }
-
-        // Metodă pentru curățarea HTML-ului din text
         private static string CleanHtml(string html)
         {
-            var doc = new HtmlDocument();
-            doc.LoadHtml(html);
-            return doc.DocumentNode.InnerText.Trim();
+            string decoded = System.Net.WebUtility.HtmlDecode(html);
+            var config = AngleSharp.Configuration.Default;
+            var context = BrowsingContext.New(config);
+            var document = context.OpenAsync(req => req.Content(decoded)).Result;
+            string text = document.Body?.TextContent?.Trim() ?? "";
+            return text.Normalize(NormalizationForm.FormC);
         }
     }
 }

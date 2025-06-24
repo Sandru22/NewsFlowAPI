@@ -40,7 +40,6 @@ namespace NewsFlowAPI.Classifier
         }
     }
 
-    // Modelul de intrare și ieșire
     public class NewsData
     {
         [LoadColumn(0)] public string Title { get; set; }

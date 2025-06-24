@@ -23,8 +23,7 @@ namespace NewsFlowAPI.Classifier
                     await newsProcessor.FetchAndStoreNewsAsync(RssUrls);
                 }
 
-                // Așteaptă 30 de minute înainte de următoarea execuție
-                await Task.Delay(TimeSpan.FromMinutes(30), stoppingToken);
+                await Task.Delay(TimeSpan.FromMinutes(15), stoppingToken);
             }
         }
     }
