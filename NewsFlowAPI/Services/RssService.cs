@@ -5,7 +5,9 @@ using System.Xml.Linq;
 using AngleSharp;
 using HtmlAgilityPack;
 using NewsFlowAPI.Classifier;
-namespace NewsFlowAPI.Models
+using NewsFlowAPI.Models;
+
+namespace NewsFlowAPI.Services
 {
     public class RssService
     {
@@ -76,7 +78,7 @@ namespace NewsFlowAPI.Models
         private static string CleanHtml(string html)
         {
             string decoded = System.Net.WebUtility.HtmlDecode(html);
-            var config = AngleSharp.Configuration.Default;
+            var config = Configuration.Default;
             var context = BrowsingContext.New(config);
             var document = context.OpenAsync(req => req.Content(decoded)).Result;
             string text = document.Body?.TextContent?.Trim() ?? "";

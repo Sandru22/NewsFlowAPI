@@ -1,6 +1,7 @@
-﻿using NewsFlowAPI.Models;
+﻿using NewsFlowAPI.Classifier;
+using NewsFlowAPI.Models;
 
-namespace NewsFlowAPI.Classifier
+namespace NewsFlowAPI.Services
 {
     public class NewsBackgroundService : BackgroundService
     {

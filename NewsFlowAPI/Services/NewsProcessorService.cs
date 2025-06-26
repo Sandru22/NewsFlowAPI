@@ -6,8 +6,9 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using NewsFlowAPI.Classifier;
 
-namespace NewsFlowAPI.Classifier
+namespace NewsFlowAPI.Services
 {
     public class NewsProcessorService
     {
@@ -86,7 +87,7 @@ namespace NewsFlowAPI.Classifier
         public static string CleanHtml(string html)
         {
             string decoded = System.Net.WebUtility.HtmlDecode(html);
-            var config = AngleSharp.Configuration.Default;
+            var config = Configuration.Default;
             var context = BrowsingContext.New(config);
             var document = context.OpenAsync(req => req.Content(decoded)).Result;
             string text = document.Body?.TextContent?.Trim() ?? "";
@@ -104,7 +105,7 @@ namespace NewsFlowAPI.Classifier
                 message = new
                 {
                     token = deviceToken,
-                    notification = new { title = title, body = body },
+                    notification = new { title, body },
                     data = new { url = Url, source = Source, newsId =  NewsId.ToString()}
                 }
             };

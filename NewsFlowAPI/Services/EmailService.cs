@@ -2,7 +2,7 @@
 using MimeKit;
 using Microsoft.Extensions.Configuration;
 
-namespace NewsFlowAPI.Auth
+namespace NewsFlowAPI.Services
 {
     public class EmailService
     {

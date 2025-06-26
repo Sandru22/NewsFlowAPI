@@ -9,8 +9,7 @@ using Microsoft.IdentityModel.Tokens;
 using NewsFlowAPI.Models;
 using NewsFlowAPI.Classifier;
 using System.Text;
-using NewsFlowAPI.Classifier;
-using NewsFlowAPI.Auth;
+using NewsFlowAPI.Services;
 
 
 var builder = WebApplication.CreateBuilder(args);

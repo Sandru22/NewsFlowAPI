@@ -5,12 +5,12 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using NewsFlowAPI.Models;
-using NewsFlowAPI.Auth;
 using System.Net;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using NewsFlowAPI.Dto;
+using NewsFlowAPI.Services;
 
 [Route("api/auth")]
 [ApiController]
