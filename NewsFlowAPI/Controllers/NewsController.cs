@@ -472,6 +472,7 @@ namespace NewsFlowAPI.Controllers
             else
             {
                 var allNews = await _context.News.ToListAsync();
+
                 finalNews = GetPersonalizedRecommendations(userId, userInteractions, allNews)
                     .Skip((page - 1) * pageSize)
                     .Take(pageSize)
@@ -488,69 +489,47 @@ namespace NewsFlowAPI.Controllers
 
             var mlContext = new MLContext();
 
-            var userCategoryPreferences = CalculateUserCategoryPreferences(userInteractions, allNews);
 
-            var trainingData = userInteractions
-                .Join(allNews, ui => ui.NewsId, news => news.NewsId, (ui, news) => new NewsTrainingInput
+            var modelPath = Path.Combine(AppContext.BaseDirectory, "modelRecommendations.zip");
+            if (!System.IO.File.Exists(modelPath))
+                return new List<NewsItem>(); 
+
+            ITransformer model;
+            using (var stream = new FileStream(modelPath, FileMode.Open, FileAccess.Read))
             {
-                 UserId = ui.UserId,
-                Category = news.Category,
-                Title = news.Title,
-                Content = news.Content,
-                Label = ui.InteractionType
-            }).ToList();
-
-
-            var dataView = mlContext.Data.LoadFromEnumerable(trainingData);
-
-
-            var pipeline = mlContext.Transforms.Conversion.MapValueToKey("UserId")
-                .Append(mlContext.Transforms.Text.FeaturizeText("TitleFeaturized", "Title"))
-                .Append(mlContext.Transforms.Text.FeaturizeText("DescriptionFeaturized", "Content"))
-                .Append(mlContext.Transforms.Categorical.OneHotEncoding("CategoryEncoded", "Category"))
-                .Append(mlContext.Transforms.Concatenate("Features", "TitleFeaturized", "DescriptionFeaturized", "CategoryEncoded"))
-                .Append(mlContext.Regression.Trainers.FastTree()); 
-
-
-  
-            var model = pipeline.Fit(dataView);
-
+                model = mlContext.Model.Load(stream, out _);
+            }
 
             var predictionEngine = mlContext.Model.CreatePredictionEngine<NewsTrainingInput, NewsPrediction>(model);
 
+            var userCategoryPreferences = CalculateUserCategoryPreferences(userInteractions, allNews);
             var seenNewsIds = userInteractions.Select(ui => ui.NewsId).ToHashSet();
-
             var now = DateTime.Now;
-            var maxAgeDays = 168; 
+            var maxAgeDays = 168;
+
             var scoredNews = allNews
                 .Where(news => !seenNewsIds.Contains(news.NewsId))
                 .Select(news =>
-            {
-                var mlScore = predictionEngine.Predict(new NewsTrainingInput
                 {
-                    UserId = userId,
-                    Content = news.Content,
-                    Title = news.Title,
-                    Category = news.Category
+                    var mlScore = predictionEngine.Predict(new NewsTrainingInput
+                    {
+                        UserId = userId,
+                        Content = news.Content,
+                        Title = news.Title,
+                        Category = news.Category
+                    }).Score;
 
-                }).Score;
-                var normalizedMlScore = 1 / (1 + Math.Exp(-mlScore));
-                var ageDays = (now - news.PublishedAt).TotalHours;
-                var freshnessBonus = Math.Max(0, 1 - (ageDays / maxAgeDays));
+                    var normalizedMlScore = 1 / (1 + Math.Exp(-mlScore));
+                    var ageDays = (now - news.PublishedAt).TotalHours;
+                    var freshnessBonus = Math.Max(0, 1 - (ageDays / maxAgeDays));
+                    var categoryScore = userCategoryPreferences.TryGetValue(news.Category, out var score) ? score : 0;
 
-                var categoryScore = userCategoryPreferences.TryGetValue(news.Category, out var score) ? score : 0;
+                    var finalScore = (freshnessBonus * 0.5) + (categoryScore * 0.05) + (normalizedMlScore * 0.45);
 
-
-                var finalScore = (freshnessBonus * 0.5)  + (categoryScore * 0.05)+ (normalizedMlScore * 0.45);
-
-                return new
-                {
-                    NewsItem = news,
-                    FinalScore = finalScore
-                };
-            })
-        .OrderByDescending(x => x.FinalScore)
-        .ToList();
+                    return new { NewsItem = news, FinalScore = finalScore };
+                })
+                .OrderByDescending(x => x.FinalScore)
+                .ToList();
 
             return scoredNews.Select(x => x.NewsItem).ToList();
         }
