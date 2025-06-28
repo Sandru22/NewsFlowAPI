@@ -26,7 +26,10 @@ builder.Services.AddIdentity<User, IdentityRole>()
     .AddEntityFrameworkStores<NewsDbContext>()
     .AddDefaultTokenProviders();
 
-
+builder.Services.Configure<IdentityOptions>(options =>
+{
+    options.User.RequireUniqueEmail = true;
+});
 
 
 
